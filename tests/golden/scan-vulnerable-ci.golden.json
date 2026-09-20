@@ -12,16 +12,11 @@
           "fixable": false
         },
         {
-          "id": "known-vulnerability-high",
-          "severity": "HIGH",
-          "description": "Bundled snapshot found HIGH vulnerability in '@modelcontextprotocol/server-filesystem': GHSA-hc55-p739-j48w - @modelcontextprotocol/server-filesystem vulnerability allows for path validation bypass via colliding path prefix",
-          "fixRecommendation": "Upgrade package or remove it. (Offline info)"
-        },
-        {
-          "id": "known-vulnerability-high",
-          "severity": "HIGH",
-          "description": "Bundled snapshot found HIGH vulnerability in '@modelcontextprotocol/server-filesystem': GHSA-q66q-fx2p-7w4m - @modelcontextprotocol/server-filesystem allows for path validation bypass via prefix matching and symlink handling",
-          "fixRecommendation": "Upgrade package or remove it. (Offline info)"
+          "id": "known-vulnerability-unresolved",
+          "severity": "LOW",
+          "description": "Package '@modelcontextprotocol/server-filesystem' has 2 known advisories (GHSA-hc55-p739-j48w, GHSA-q66q-fx2p-7w4m) in the offline snapshot (recorded against version 2026.7.10), but the resolved version could not be confirmed against it while offline. This is not a confirmed vulnerability - verify manually.",
+          "fixRecommendation": "Pin '@modelcontextprotocol/server-filesystem' to an exact version and re-scan online to get a confirmed verdict.",
+          "fixable": false
         }
       ],
       "trustScore": 40,
@@ -44,11 +39,11 @@
       "findings": [
         {
           "id": "exposed-secret",
-          "severity": "CRITICAL",
-          "description": "Exposed GitHub Token in environment variable 'GITHUB_PERSONAL_ACCESS_TOKEN'.",
+          "severity": "HIGH",
+          "description": "Exposed GitHub Token in environment variable 'GITHUB_PERSONAL_ACCESS_TOKEN'. Path suggests a test fixture or example. Verify before treating it as a live credential.",
           "fixRecommendation": "Move the secret to a secure environment variable and reference it instead (e.g., ${GITHUB_PERSONAL_ACCESS_TOKEN}).",
           "fixable": true,
-          "remediationConfidence": 99
+          "remediationConfidence": 60
         }
       ],
       "trustScore": 100,
@@ -77,12 +72,6 @@
           "description": "Package 'mcp-analytics-proo' is on the known malicious blocklist.",
           "fixRecommendation": "Remove this server immediately.",
           "fixable": false
-        },
-        {
-          "id": "license-risk",
-          "severity": "HIGH",
-          "description": "Package 'mcp-analytics-proo' has no license specified.",
-          "fixRecommendation": "Unlicensed software carries legal risk for commercial use. Verify the license manually."
         }
       ],
       "trustScore": 30,
@@ -104,23 +93,17 @@
       "findings": [
         {
           "id": "exposed-secret",
-          "severity": "CRITICAL",
-          "description": "Exposed Stripe Secret Key in environment variable 'STRIPE_KEY'.",
+          "severity": "HIGH",
+          "description": "Exposed Stripe Secret Key in environment variable 'STRIPE_KEY'. Path suggests a test fixture or example. Verify before treating it as a live credential.",
           "fixRecommendation": "Move the secret to a secure environment variable and reference it instead (e.g., ${STRIPE_KEY}).",
           "fixable": true,
-          "remediationConfidence": 99
-        },
-        {
-          "id": "license-risk",
-          "severity": "HIGH",
-          "description": "Package 'stripe-server' has no license specified.",
-          "fixRecommendation": "Unlicensed software carries legal risk for commercial use. Verify the license manually."
+          "remediationConfidence": 60
         },
         {
           "id": "unverified-source",
-          "severity": "HIGH",
-          "description": "Server 'stripe-server' is an unscoped package from an unverified source (higher typosquatting risk).",
-          "fixRecommendation": "Verify the publisher of 'stripe-server' on npmjs.com before trusting this server."
+          "severity": "MEDIUM",
+          "description": "Server 'stripe-server' is an unscoped package from an unverified source (typosquatting risk).",
+          "fixRecommendation": "Verify the publisher of 'stripe-server' on npmjs.com before trusting this server, or ask the maintainer to publish with npm provenance (npm publish --provenance from GitHub Actions or GitLab CI) so mcp-scan can confirm it automatically."
         }
       ],
       "trustScore": 30,
@@ -141,9 +124,9 @@
     }
   ],
   "totalScanned": 4,
-  "criticalCount": 3,
-  "highCount": 6,
-  "mediumCount": 0,
-  "lowCount": 0,
+  "criticalCount": 1,
+  "highCount": 3,
+  "mediumCount": 1,
+  "lowCount": 1,
   "infoCount": 0
 }

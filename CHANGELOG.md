@@ -6,6 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [2.0.13] - 2026-09-07
+
+### Changed
+- Terminal output shows config paths under your home directory as `~`
+  instead of the full path. JSON, SARIF, HTML, and audit-log output are
+  unaffected, still absolute.
+- Fixed the header box border misaligning in most terminals (a double-width
+  emoji threw off the padding math).
+
+### Added
+- A one-line, once-per-machine hint after a scan finds something: mcp-scan
+  is maintained by one person, a star helps others find it. Only prints on
+  a real terminal, never under `--json`, `--sarif`, CI, or piped output.
+  Silence it permanently with `MCP_SCAN_NO_HINTS=1`.
+
+## [2.0.12] - 2026-09-05
+
+### Changed
+- Registry scanner checks npm provenance attestations before flagging a package as
+  unverified. A package published with `npm publish --provenance` now gets an INFO
+  `provenance-verified` finding instead of `unverified-source`. Packages without
+  provenance still get `unverified-source`, now at MEDIUM (unscoped) or LOW (scoped)
+  instead of HIGH/MEDIUM, since name-based unverified checks alone were flagging
+  most of npm, including mcp-scan's own package.
+- `blessed` and `blessed-contrib` (the TUI dashboard's terminal-rendering
+  libraries) moved from `dependencies` to `optionalDependencies`. They're
+  still installed by default for `npx`/CLI users, but `import { runScan }
+  from 'mcp-scan'` no longer pulls in 2MB of terminal-UI packages (and
+  their `xml2js` transitive) for consumers who never touch the dashboard.
+  `mcp-scan dashboard` and `proxy --ui` now print an install hint and exit
+  1 instead of crashing if the optional install was skipped.
+
+### Added
+- `mcp-scan badge <package>` prints the README badge markdown and report link
+  for a package's hosted check at thynkq.com; `scan` now ends with the same
+  report hint for the scanned package.
+
+### Fixed
+- npm provenance publishing works again: `repository.url` must name the GitHub
+  repo the release workflow runs in, or the registry rejects the sigstore
+  bundle (the 2.0.11 tag never reached npm for this reason).
+
+## [2.0.11] - 2026-09-05
+
+### Fixed
+- data-controls: config file paths no longer scanned for PII.
+
+## [2.0.10] - 2026-09-01
+
+### Added
+- A one-line pointer to the GitHub repo after a `scan` that finds at least one
+  issue. Shown once per machine ever (marker in `~/.mcp-scan`), TTY-only,
+  never in `--json`, `--sarif`, or `ci` output, silenced permanently with
+  `MCP_SCAN_NO_HINTS=1`.
+
+## [2.0.9] - 2026-09-01
+
+### Fixed
+- `report` no longer drops dotfile configs from its glob scan. fast-glob excludes
+  dotfiles by default, which silently skipped `.mcp.json`, the single most common
+  MCP config filename. The command could report "found N config files" while
+  scanning none of the servers those configs defined.
+- Licenses are no longer reported missing when the registry lookup falls back to
+  offline mode.
+- Placeholder credentials in example configs are no longer flagged CRITICAL.
+- Vulnerability matching compares the resolved version against the advisory range
+  instead of matching on package name alone.
+
 ## [2.0.8] - 2026-08-29
 
 ### Added

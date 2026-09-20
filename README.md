@@ -2,11 +2,12 @@
 
 [![npm version](https://badge.fury.io/js/mcp-scan.svg)](https://badge.fury.io/js/mcp-scan)
 [![npm downloads](https://img.shields.io/npm/dw/mcp-scan)](https://www.npmjs.com/package/mcp-scan)
-[![GitHub stars](https://img.shields.io/github/stars/Abanoub-Rodolf/mcp-scan?style=social)](https://github.com/Abanoub-Rodolf/mcp-scan)
-[![CI](https://github.com/Abanoub-Rodolf/mcp-scan/actions/workflows/ci.yml/badge.svg)](https://github.com/Abanoub-Rodolf/mcp-scan/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Abanoub-Rodolf/mcp-scan/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Abanoub-Rodolf/mcp-scan)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/gitlab.com/abanoub.rodolf/mcp-scan/badge)](https://securityscorecards.dev/viewer/?uri=gitlab.com/abanoub.rodolf/mcp-scan)
 [![npm provenance](https://img.shields.io/badge/npm%20provenance-signed-brightgreen)](https://docs.npmjs.com/generating-provenance-statements)
+[![mcp-scan](https://thynkq.com/api/mcp-scan/badge/mcp-scan.svg)](https://thynkq.com/mcp-scan/check/mcp-scan)
+
+<p align="center"><img src="https://raw.githubusercontent.com/Abanoub-Rodolf/mcp-scan/main/assets/demo.gif" width="800" alt="mcp-scan auto-detecting two clients and reporting two critical findings"></p>
 
 **Open-source security scanner for Model Context Protocol (MCP) servers.**
 
@@ -17,6 +18,18 @@ npx mcp-scan@latest
 ```
 
 No installation. No sign-up. No telemetry. No data leaves your machine. Supply chain scanning makes registry lookups (npm, OSV.dev, GitHub API) - disable with `--offline`.
+
+---
+
+## Badge
+
+Publish an MCP server yourself? Get a public badge for its README:
+
+```bash
+npx mcp-scan badge <your-npm-package-name>
+```
+
+Prints a ready-to-paste Markdown snippet linking to a hosted scan report at thynkq.com. The command itself makes no network calls and needs no account, but the badge image is served by thynkq.com and loads whenever someone views the README. Every scan also prints a public report link for each server it found, whether or not you publish it yourself.
 
 ---
 
@@ -46,7 +59,7 @@ mcp-scan was built after analyzing hundreds of publicly available MCP server con
 | Overly Broad Permissions | HIGH | Server requests filesystem or shell access it does not need |
 | Telemetry Tracking | MEDIUM | Server contacts known analytics or tracking domains |
 | Privacy Gaps | MEDIUM | Missing data retention, deletion, or encryption-at-rest policies |
-| Unverified Source | HIGH | Package not from a verified registry or organization |
+| Unverified Source | MEDIUM | Package not from a verified registry or organization, and not published with npm provenance |
 | Data Minimization | LOW | Tool requests significantly more data fields than necessary |
 | Missing Transport | HIGH | MCP server communicates over unencrypted transport |
 
@@ -96,11 +109,18 @@ npx mcp-scan@latest compliance
 # Software Bill of Materials (CycloneDX or SPDX)
 npx mcp-scan@latest sbom
 
+# Public scan badge and report link for an npm package
+npx mcp-scan@latest badge <package-name>
+
 # Validate custom security policies
 npx mcp-scan@latest policy validate
 
 # CI mode: exit 1 on CRITICAL or HIGH findings (plain scans report without failing)
 npx mcp-scan@latest --ci --severity high
+
+# Interactive TUI dashboard (blessed/blessed-contrib install as optional
+# dependencies; if the install was skipped, this prints an install hint)
+npx mcp-scan@latest dashboard
 ```
 
 ---
@@ -230,12 +250,12 @@ brew install mcp-scan
 ## Paid next steps
 
 `mcp-scan` itself is free and MIT. When a scan finds something that needs a
-decision, two paid options exist — neither is required to use the scanner:
+decision, two paid options exist. Neither is required to use the scanner:
 
-- **MCP Risk Review** — a human-led, 48-hour review of a real MCP setup by the
+- **MCP Risk Review**: a human-led, 48-hour review of a real MCP setup by the
   maintainer, with a clear go / fix / escalate recommendation. See
   [thynkq.com/pricing#specialist-review](https://thynkq.com/pricing#specialist-review).
-- **mcp-scan Pro waitlist** — hosted reports, policy packs, and buyer-safe risk
+- **mcp-scan Pro waitlist**: hosted reports, policy packs, and buyer-safe risk
   summaries for teams that need a shareable artifact after a local scan. Join at
   [thynkq.com/products/mcp-scan#mcp-pro-waitlist](https://thynkq.com/products/mcp-scan#mcp-pro-waitlist).
 

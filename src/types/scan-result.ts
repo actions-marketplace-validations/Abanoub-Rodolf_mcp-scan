@@ -59,10 +59,18 @@ export const FINDING_IDS = [
   'data-controls-stale-temp-files',
   'known-vulnerability-medium',
   'known-vulnerability-low',
+  'known-vulnerability-unresolved',
   'insecure-transport',
   'http-transport-no-auth',
   'outdated-transport',
   'stale-server',
+  'dependency-known-vulnerability-critical',
+  'dependency-known-vulnerability-high',
+  'dependency-known-vulnerability-medium',
+  'dependency-known-vulnerability-low',
+  'dependency-known-vulnerability-unresolved',
+  'dependency-osv-lookup-incomplete',
+  'github-metadata-unverified',
 ] as const;
 
 export type FindingId = typeof FINDING_IDS[number];
@@ -74,6 +82,13 @@ export interface Finding {
   fixRecommendation?: string;
   fixable?: boolean;
   remediationConfidence?: number; // 1-100
+  // Set only by osv-scanner.ts's dependency-CVE findings: whether the
+  // resolved dependency version came from a shipped lockfile (proof of
+  // what npm actually installs) or was inferred from the manifest's semver
+  // range (a name+range match only - the real installed version could
+  // differ once the whole dependency graph is resolved). Surfaced as its
+  // own column in findings-ranked.mjs so it isn't lost in truncated text.
+  dependencyResolution?: 'lockfile' | 'manifest-range';
 }
 
 /**
@@ -85,6 +100,11 @@ export interface PackageMetadata {
   packageName?: string;
   version?: string;
   license?: string;
+  // True only when license came from a live, authoritative registry lookup.
+  // The offline CVE snapshot is a small curated set (~70 packages); a miss
+  // there means "we don't know", not "no license" - license-scanner reads
+  // this to avoid reporting an absence of data as an absence of license.
+  licenseVerified?: boolean;
   repositoryUrl?: string;
   author?: string;
   integrity?: string;
