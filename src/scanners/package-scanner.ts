@@ -4,6 +4,8 @@ import { Severity } from '../types/severity.js';
 import { logger } from '../utils/logger.js';
 import { fetchWithTimeout } from '../utils/fetch-with-timeout.js';
 import { loadCveSnapshot } from '../utils/cve-snapshot.js';
+import { OFFICIAL_SERVERS, TRUSTED_COMMUNITY_SERVERS } from '../data/official-servers.js';
+import { KNOWN_MALICIOUS_PACKAGES } from '../data/known-malicious.js';
 import { parseCvssVector } from 'vuln-vects';
 import semver from 'semver';
 
@@ -80,6 +82,153 @@ function vulnSeverityToFinding(severity: Severity): { id: FindingId; severity: S
     case 'MEDIUM': return { id: 'known-vulnerability-medium', severity: 'MEDIUM' };
     default: return { id: 'known-vulnerability-low', severity: 'LOW' };
   }
+}
+
+// npx/npm options whose value is the next arg, not the package.
+const NPX_VALUE_OPTS = new Set([
+    '--registry', '--cache', '--userconfig', '--prefix', '-w', '--workspace', '--loglevel', '--before',
+  '--otp', '--tag', '--node-options', '--script-shell', '--proxy', '--https-proxy', '--cafile', '--include', '--shell', '-C', '--globalconfig', '--omit', '--fetch-timeout', '--fetch-retries',
+  '--scope', '--auth-type', '--install-strategy', '--min-release-age', '--audit-level', '--ca', '--cert', '--key', '--cpu', '--os', '--libc',
+  '--noproxy', '--local-address', '--user-agent', '--maxsockets', '--fetch-retry-mintimeout', '--fetch-retry-maxtimeout',
+]);
+// Flags that take no value. A dash flag in neither set might take one, so the
+// package is then ambiguous and the riskiest candidate is graded.
+export const NPX_BOOL_OPTS = new Set([
+  '-y', '--yes', '--no', '--no-install', '-q', '--quiet', '--silent', '--verbose', '-d', '-f', '--force', '--offline',
+  '--prefer-online', '--prefer-offline', '--no-audit', '--no-fund', '--ignore-scripts', '--legacy-peer-deps', '--json',
+  '-g', '--global', '--workspaces', '-ws', '--include-workspace-root', '--if-present', '--dry-run', '--no-update-notifier',
+  '--ignore-existing', '--no-progress', '--foreground-scripts', '--strict-peer-deps',
+  '--audit', '--fund', '--timing', '--color', '--strict-ssl', '--usage', '--long', '--parseable', '--unicode', '--progress',
+]);
+// npm subcommands that run no package. npm resolves unique prefixes and
+// aliases of exec/init too, so those are matched loosely below instead.
+const NPM_NON_EXEC_SUBS = new Set([
+  'install', 'i', 'in', 'ins', 'inst', 'add', 'ci', 'run', 'run-script', 'rum', 'urn', 'test', 't', 'tst', 'start', 'stop',
+  'restart', 'view', 'info', 'v', 'ls', 'list', 'la', 'll', 'update', 'up', 'upgrade', 'uninstall', 'remove', 'rm', 'un',
+  'publish', 'pack', 'audit', 'outdated', 'cache', 'config', 'set', 'get', 'login', 'logout', 'whoami', 'version', 'help',
+  'link', 'ln', 'prune', 'dedupe', 'explain', 'why', 'doctor', 'fund', 'search', 's', 'se', 'find', 'pkg', 'prefix', 'root',
+  'bin', 'repo', 'docs', 'home', 'bugs', 'rebuild', 'shrinkwrap', 'star', 'stars', 'unstar', 'team', 'token', 'unpublish',
+  'hook', 'org', 'owner', 'access', 'adduser', 'completion', 'diff', 'edit', 'explore', 'query', 'sbom', 'ping', 'profile',
+  'deprecate', 'dist-tag', 'find-dupes', 'install-test', 'it', 'install-ci-test', 'cit', 'sit',
+]);
+const isExecSub = (w: string) => w === 'x' || (w.length >= 2 && 'exec'.startsWith(w));
+const isCreateSub = (w: string) => w === 'innit' || (w.length >= 2 && w !== 'in' && 'init'.startsWith(w)) || (w.length >= 2 && 'create'.startsWith(w));
+const MAX_CANDIDATES = 4;
+const MAX_PACKAGES = 32;
+
+/** npm init/create <spec> runs create-<name>; scoped @s -> @s/create, @s/n -> @s/create-n. */
+function createPackage(spec: string): string {
+  const { name, versionSpec } = parsePackageSpec(spec);
+  const v = versionSpec ? `@${versionSpec}` : '';
+  if (name.startsWith('@')) {
+    const [scope, rest] = name.split('/');
+    return `${scope}/${rest ? `create-${rest}` : 'create'}${v}`;
+  }
+  return `create-${name}${v}`;
+}
+
+const isKnownPkg = (spec: string) => {
+  const { name } = parsePackageSpec(spec);
+  return OFFICIAL_SERVERS.has(name) || TRUSTED_COMMUNITY_SERVERS.has(name);
+};
+
+/**
+ * Every package an npx/npm launch might run. Normally one. When an unknown
+ * flag could be swallowing the next arg as its value, the real package is
+ * ambiguous and up to four leading positionals that are valid package names
+ * come back, so callers can grade all of them. With --package the named
+ * packages are the answer and the first positional is only the bin.
+ */
+// npx.cmd on Windows, full paths and case-insensitive filesystems all run
+// the same launcher, so compare the bare lowercase name.
+export function launcher(command: unknown): string {
+  return (typeof command === 'string' ? command : '').split(/[\\/]/).pop()!.replace(/\.(cmd|exe|bat|ps1)$/i, '').toLowerCase();
+}
+
+export function npxPackageCandidates(args: unknown, command?: string): string[] {
+  const list = (Array.isArray(args) ? args : args && typeof args === 'object' ? Object.values(args) : [])
+    .filter((a): a is string => typeof a === 'string');
+  const cmd = launcher(command);
+  const pkgs: string[] = [];
+  const pos: string[] = [];
+  let ambiguous = false;
+  let sub = cmd !== 'npm';
+  let create = false;
+  let endOpts = false;
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    // npx options end at the first positional; anything after it is the
+    // server's own args (-p is often a port there), unless a flag we do not
+    // know may have eaten the package.
+    if (pos.length > 0) {
+      // npm exec, unlike npx, still reads --package after the bin
+      if (cmd === 'npm' && !create && !endOpts) {
+        if (a === '--') { endOpts = true; continue; }
+        if (a.startsWith('--package=') || a.startsWith('--no-package=')) { pkgs.push(a.slice(a.indexOf('=') + 1)); continue; }
+        if (a.startsWith('-p=')) { pkgs.push(a.slice(3)); continue; }
+        if ((a === '--package' || a === '-p' || a === '--no-package') && i + 1 < list.length) { pkgs.push(list[++i]); continue; }
+        if (NPX_VALUE_OPTS.has(a) || a === '-c' || a === '--call') { i++; continue; }
+        if (!ambiguous) continue;
+      }
+      if (!ambiguous) { if (cmd === 'npm') continue; break; }
+      // The unknown flag may have eaten the first positional, so --package
+      // can still be live here. Keep scanning to the end for it; only the
+      // positional candidates are capped.
+      if (!create && !endOpts) {
+        if (a === '--') { endOpts = true; continue; }
+        if (a.startsWith('--package=') || a.startsWith('--no-package=')) { pkgs.push(a.slice(a.indexOf('=') + 1)); continue; }
+        if (a.startsWith('-p=')) { pkgs.push(a.slice(3)); continue; }
+        if ((a === '--package' || a === '-p' || a === '--no-package') && i + 1 < list.length) { pkgs.push(list[++i]); continue; }
+      }
+      if (a === '-c' || a === '--call' || NPX_VALUE_OPTS.has(a) || /^--@[^:]+:registry$/.test(a)) i++;
+      else if (!a.startsWith('-') && pos.length < MAX_CANDIDATES) pos.push(a);
+      continue;
+    }
+    if (!endOpts && a === '--') endOpts = true;
+    else if (!endOpts && a.startsWith('-')) {
+      if (a.startsWith('--package=') || a.startsWith('--no-package=')) pkgs.push(a.slice(a.indexOf('=') + 1));
+      else if (a.startsWith('-p=')) pkgs.push(a.slice(3));
+      else if ((a === '--package' || a === '-p' || a === '--no-package') && i + 1 < list.length) pkgs.push(list[++i]);
+      // -c runs a command string, not a package: the AST scanner grades it,
+      // and it must never reach a registry lookup.
+      else if (a === '-c' || a === '--call') i++;
+      else if (a.startsWith('--call=') || a.startsWith('-c=')) continue;
+      else if (NPX_VALUE_OPTS.has(a) || /^--@[^:]+:registry$/.test(a)) i++;
+      else if (!a.includes('=') && !NPX_BOOL_OPTS.has(a) && !a.startsWith('--no-')) ambiguous = true;
+    } else if (!sub) {
+      if (isExecSub(a)) sub = true;
+      else if (isCreateSub(a)) sub = create = true;
+      else if (NPM_NON_EXEC_SUBS.has(a)) return [];
+      else if (!ambiguous) { sub = true; pos.push(a); }
+      // else: the value of an unknown flag before the subcommand
+    } else pos.push(a);
+  }
+  if (pkgs.length > 0) {
+    // Risk first, so the cap can only ever drop allowlisted packages.
+    const rank = (p: string) => KNOWN_MALICIOUS_PACKAGES.has(parsePackageSpec(p).name) ? 0 : isKnownPkg(p) ? 2 : 1;
+    // After an unknown flag the positionals may still be what runs, so keep them.
+    const all = ambiguous ? [...pkgs, ...pos.filter(c => !/^\.{0,2}\/|\s/.test(c))] : pkgs;
+    return [...new Set(all)].sort((x, y) => rank(x) - rank(y)).slice(0, MAX_PACKAGES);
+  }
+  let cands = create ? pos.map(createPackage) : pos;
+  if (ambiguous && cands.length > 1) {
+    const valid = cands.filter(c => validatePackageName(c).valid);
+    if (valid.length > 0) cands = valid;
+  }
+  return cands;
+}
+
+/**
+ * The one package the single-package checks grade. With several candidates
+ * the riskiest wins: known-malicious, then the first not on an allowlist.
+ * scan.ts also grades the others, so a flag value can never hide a package.
+ */
+export function npxPackageArg(args: unknown, command?: string): string | undefined {
+  const cands = npxPackageCandidates(args, command);
+  if (cands.length <= 1) return cands[0];
+  return cands.find(c => KNOWN_MALICIOUS_PACKAGES.has(parsePackageSpec(c).name))
+    ?? cands.find(c => !isKnownPkg(c))
+    ?? cands[0];
 }
 
 /**
@@ -224,9 +373,10 @@ export async function scanPackageDeep(server: ResolvedServer, offline: boolean =
   const findings: Finding[] = [];
 
   let packageSpec = '';
-  if (server.command === 'npx' || server.command === 'npm') {
-    const pkgArg = (Array.isArray(server.args) ? server.args : (server.args ? Object.values(server.args) : [])).find(a => typeof a === 'string' && !a.startsWith('-'));
-    if (pkgArg) packageSpec = pkgArg as string;
+  const cmd = launcher(server.command);
+  if (cmd === 'npx' || cmd === 'npm') {
+    const pkgArg = npxPackageArg(server.args, server.command);
+    if (pkgArg) packageSpec = pkgArg;
   }
 
   if (!packageSpec) return findings;
@@ -401,6 +551,8 @@ export async function scanPackageDeep(server: ResolvedServer, offline: boolean =
   return findings;
 }
 
+let staleSnapshotWarned = false;
+
 function scanPackageOffline(packageName: string, versionSpec: string | null): Finding[] {
   const findings: Finding[] = [];
   try {
@@ -415,8 +567,11 @@ function scanPackageOffline(packageName: string, versionSpec: string | null): Fi
     const updatedAt = new Date(data.updatedAt ?? NaN);
     const now = new Date();
     const diffDays = (now.getTime() - updatedAt.getTime()) / (1000 * 60 * 60 * 24);
-    if (diffDays > 30) {
-      logger.warn(`CVE snapshot is ${Math.floor(diffDays)} days old. Run 'npm run update-cve-snapshot' to update.`);
+    if (diffDays > 30 && !staleSnapshotWarned) {
+      // Once per process, not per server. The update script only exists in
+      // a source checkout, so installed users are told to upgrade instead.
+      staleSnapshotWarned = true;
+      logger.warn(`CVE snapshot is ${Math.floor(diffDays)} days old. Upgrade mcp-scan to get a newer one.`);
     }
 
     const pkgData = data.packages?.[packageName];
@@ -451,6 +606,20 @@ function scanPackageOffline(packageName: string, versionSpec: string | null): Fi
         });
       }
     }
-  } catch (_error) {}
+  } catch (error) {
+    // A snapshot of an unexpected shape used to read as "no known
+    // vulnerabilities". Say the check did not finish.
+    // stderr, not logger.warn: --json and --ci silence the logger, and CI is where this must show.
+    // Once per message: a bad snapshot fails for every package, on every watch rescan.
+    // The name comes from the scanned config, so control characters never reach the terminal.
+    const name = packageName.replace(/[\x00-\x1f\x7f]/g, '?');
+    const msg = `Offline CVE check for '${name}' failed (${error instanceof Error ? error.message : String(error)}); its vulnerability results may be incomplete.`;
+    if (!warnedOffline.has(msg)) {
+      if (warnedOffline.size >= 200) warnedOffline.clear();
+      warnedOffline.add(msg);
+      process.stderr.write(`mcp-scan: ${msg}\n`);
+    }
+  }
   return findings;
 }
+const warnedOffline = new Set<string>();

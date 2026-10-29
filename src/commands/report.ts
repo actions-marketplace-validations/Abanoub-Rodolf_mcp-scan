@@ -8,12 +8,16 @@ import { printJsonReport } from '../utils/json-reporter.js';
 import { printReport } from '../utils/reporter.js';
 import { generateHtmlReport } from '../utils/html-reporter.js';
 import { recalcSeverityCounts } from '../utils/severity-tally.js';
+import { assertBaselineKeyUsable, BaselineKeyError } from '../utils/audit-logger.js';
+import { PolicyError } from '../utils/policy-file.js';
 
 /**
  * Scans all config files in a directory and aggregates them into one report.
  */
 export async function runMultiConfigReport(options: { configs?: string, html?: string, json?: boolean }) {
   const targetDir = options.configs || process.cwd();
+  // With --json stdout is the report and nothing else, so `| jq` works.
+  if (options.json) logger.toStderr = true;
   logger.brand(`Aggregating reports from: ${targetDir}`);
 
   // dot:true is required - fast-glob's default excludes dotfiles/dot-dirs,
@@ -57,11 +61,17 @@ export async function runMultiConfigReport(options: { configs?: string, html?: s
     totalDurationMs: 0
   };
 
+  // Every file would fail the same way; one clear line beats one per file.
+  assertBaselineKeyUsable();
+
   const startTime = Date.now();
   const seenServers = new Set<string>();
   let notMcpConfigCount = 0;
   let failedFileCount = 0;
 
+  // runScan({ silent: true }) silences the shared logger, and the human
+  // report prints through it: restore after each file or nothing prints.
+  const silent = logger.isSilent;
   for (const file of configFiles) {
     // Basic check if it looks like an MCP config
     try {
@@ -83,10 +93,16 @@ export async function runMultiConfigReport(options: { configs?: string, html?: s
         }
         }
     } catch (err) {
+      if (err instanceof BaselineKeyError) throw err;
+      // A broken policy would fail every file the same way; stop, don't skip.
+      if (err instanceof PolicyError) throw err;
       // Silently swallowed per-file failures made configs vanish from the
       // aggregated report with no way to know they were skipped.
       failedFileCount++;
+      logger.isSilent = silent;
       logger.warn(`Skipping ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      logger.isSilent = silent;
     }
   }
 

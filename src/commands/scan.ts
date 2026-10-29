@@ -5,7 +5,7 @@ import { detectTools } from '../config/detector.js';
 import { parseConfig, extractServers, loadPolicy, loadIgnoreList } from '../config/parser.js';
 import { scanSecrets } from '../scanners/secret-scanner.js';
 import { scanPermissions } from '../scanners/permission-scanner.js';
-import { scanRegistry } from '../scanners/registry-scanner.js';
+import { scanRegistry, isRegistryKey, configKey } from '../scanners/registry-scanner.js';
 import { scanTyposquat } from '../scanners/typosquat-scanner.js';
 import { scanTransport } from '../scanners/transport-scanner.js';
 import { scanConfig } from '../scanners/config-scanner.js';
@@ -14,7 +14,7 @@ import { scanPromptInjection } from '../scanners/prompt-injection-scanner.js';
 import { scanToolPoisoning } from '../scanners/tool-poisoning-scanner.js';
 import { scanEnvLeak } from '../scanners/env-leak-scanner.js';
 import { scanSupplyChain, SupplyChainResult } from '../scanners/supply-chain-scanner.js';
-import { scanPackageDeep } from '../scanners/package-scanner.js';
+import { scanPackageDeep, npxPackageArg, npxPackageCandidates, parsePackageSpec, launcher, NPX_BOOL_OPTS } from '../scanners/package-scanner.js';
 import { scanLicense } from '../scanners/license-scanner.js';
 import { scanDataFlow } from '../scanners/data-flow-scanner.js';
 import { scanNetworkEgress } from '../scanners/network-egress-scanner.js';
@@ -27,18 +27,24 @@ import { DetectedTool } from '../types/config.js';
 import { createSpinner } from '../utils/spinner.js';
 import { printJsonReport } from '../utils/json-reporter.js';
 import { printReport } from '../utils/reporter.js';
-import { logScan, checkFingerprints } from '../utils/audit-logger.js';
+import { logScan, checkFingerprints, assertBaselineKeyUsable, fingerprintKey } from '../utils/audit-logger.js';
 import { recalcSeverityCounts, countTotalFindings } from '../utils/severity-tally.js';
 import { repoHint, reportHint, findReportablePackage } from '../utils/repo-hint.js';
 import { loadCustomRules, evaluateCustomRules } from '../utils/rule-engine.js';
-import { SEVERITY_ORDER, Severity } from '../types/severity.js';
+import { SEVERITY_ORDER, Severity, isSeverity } from '../types/severity.js';
 import { logger } from '../utils/logger.js';
 
 export async function runScan(options: ScanOptions = {}): Promise<ScanReport> {
   const startTime = Date.now();
+
+  // Before any work: a key path that is not a file cannot be fixed mid-scan.
+  assertBaselineKeyUsable();
   
+  // Both policies load before anything is scanned or written: a broken one
+  // throws PolicyError and the scan never starts.
   const policy = loadPolicy();
-  const ignoreList = loadIgnoreList();
+  const yamlPolicy = loadYamlPolicy(options.policy);
+  const ignoreList = loadIgnoreList(undefined, { silent: options.silent });
   const customRules = loadCustomRules();
   if (policy && !options.silent) {
     logger.detail(`Applied security policy from .mcp-scan.json`);
@@ -86,7 +92,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanReport> {
   const seenServers = new Set<string>();
   
   const minSeverityLevel = (options.severity || policy?.maxSeverity || 'low').toUpperCase() as Severity;
-  if (!(minSeverityLevel in SEVERITY_ORDER)) {
+  if (!isSeverity(minSeverityLevel)) {
     throw new Error(`Invalid severity '${options.severity}'. Valid values: ${Object.keys(SEVERITY_ORDER).join(', ').toLowerCase()}`);
   }
   const minSeverity = SEVERITY_ORDER[minSeverityLevel];
@@ -111,7 +117,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanReport> {
         report.results.push({
           serverName: server.name,
           toolName: tool.name,
-          configPath: tool.configPath,
+          configPath: server.configPath,
           scanDurationMs: 0,
           findings: [{
             id: 'duplicate-server',
@@ -144,7 +150,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanReport> {
 
       const scannerRuns: Array<[string, () => Finding[] | Promise<Finding[]>]> = [
         ['secret', () => scanSecrets(server)],
-        ['env-leak', () => scanEnvLeak(server, tool.configPath)],
+        ['env-leak', () => scanEnvLeak(server, server.configPath)],
         ['prompt-injection', () => scanPromptInjection(server)],
         ['tool-poisoning', () => scanToolPoisoning(server)],
         ['permissions', () => scanPermissions(server)],
@@ -166,13 +172,48 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanReport> {
 
       // Simple heuristic for package name from supply-chain-scanner
       let packageName = '';
-      if (server.command === 'npx' || server.command === 'npm') {
-        const pkgArg = (Array.isArray(server.args) ? server.args : (server.args ? Object.values(server.args) : [])).find(a => typeof a === 'string' && !a.startsWith('-'));
-        if (pkgArg) packageName = pkgArg as string;
+      let candidates: string[] = [];
+      const cmd = launcher(server.command);
+      if (cmd === 'npx' || cmd === 'npm') {
+        const pkgArg = npxPackageArg(server.args, server.command);
+        if (pkgArg) packageName = pkgArg;
+        candidates = npxPackageCandidates(server.args, server.command);
+      }
+      // Keep the flags that pick where npm installs from, so an alternate
+      // candidate is graded against the same registry as the real launch.
+      const args = Array.isArray(server.args) ? server.args.filter((x): x is string => typeof x === 'string') : [];
+      const where: string[] = [];
+      // npx hands everything after the package to the server, so stop at the
+      // first positional that isn't a flag's value (npx-cli's own rule).
+      let valued = false;
+      for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') break;
+        if (!a.startsWith('-')) {
+          if (cmd === 'npx' && !valued) break;
+          valued = false;
+          continue;
+        }
+        valued = !a.includes('=') && !NPX_BOOL_OPTS.has(a) && !a.startsWith('--no-') && !/^-[a-z]{2,}$/i.test(a);
+        const m = /^--([^=]+)(=|$)/.exec(a);
+        if (!m || !(isRegistryKey(m[1]) || configKey(m[1]))) continue;
+        where.push(a);
+        if (!m[2] && args[i + 1] !== undefined && !args[i + 1].startsWith('-')) { where.push(args[++i]); valued = false; }
+      }
+
+      // An unknown flag can swallow the package as its value, leaving several
+      // candidates. The scanners above graded the riskiest one; grade the
+      // rest too so a flag value can never hide the package that runs.
+      for (const cand of candidates.filter(c => c !== packageName)) {
+        const alt = { ...server, command: 'npx', args: [...where, cand] };
+        const seen = new Set(allFindings.map(f => `${f.id}|${f.description}`));
+        for (const [name, fn] of [['registry', () => scanRegistry(alt, options.offline)], ['typosquat', () => scanTyposquat(alt)]] as Array<[string, () => Finding[] | Promise<Finding[]>]>) {
+          allFindings.push(...(await runScanner(name, fn)).filter(f => !seen.has(`${f.id}|${f.description}`)));
+        }
       }
 
       // Apply policy: Blocked Packages
-      if (policy && policy.blockedPackages && (policy.blockedPackages.includes(packageName) || policy.blockedPackages.includes(server.name))) {
+      if (policy && policy.blockedPackages && (candidates.some(c => policy.blockedPackages!.includes(c) || policy.blockedPackages!.includes(parsePackageSpec(c).name)) || policy.blockedPackages.includes(parsePackageSpec(packageName).name) || policy.blockedPackages.includes(packageName) || policy.blockedPackages.includes(server.name))) {
         allFindings.push({
           id: 'blocked-package-policy',
           severity: 'CRITICAL',
@@ -212,6 +253,17 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanReport> {
         return result.findings;
       });
       allFindings.push(...supplyChainResult);
+
+      // Same for the deeper package checks on the non-primary candidates.
+      for (const cand of candidates.filter(c => c !== packageName)) {
+        const alt = { ...server, command: 'npx', args: [...where, cand] };
+        const seen = new Set(allFindings.map(f => `${f.id}|${f.description}`));
+        const extra = [
+          ...await runScanner('package', () => scanPackageDeep(alt, options.offline)),
+          ...await runScanner('supply-chain', async () => (await scanSupplyChain(alt, options.offline)).findings),
+        ];
+        allFindings.push(...extra.filter(f => !seen.has(`${f.id}|${f.description}`)));
+      }
       
       const licenseFindings = await runScanner('license', () => scanLicense(metadata));
       allFindings.push(...licenseFindings);
@@ -230,7 +282,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanReport> {
       const processedFindings = allFindings.map(f => {
         const isIgnored = ignoreList.includes(f.id) || 
                           ignoreList.includes(server.name) || 
-                          ignoreList.some(i => tool.configPath.endsWith(i));
+                          ignoreList.some(i => server.configPath.endsWith(i));
         
         if (isIgnored) {
           return {
@@ -247,7 +299,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanReport> {
       const serverResult: ServerScanResult = {
         serverName: server.name,
         toolName: tool.name,
-        configPath: tool.configPath,
+        configPath: server.configPath,
         findings,
         scanDurationMs: Date.now() - serverStartTime,
         trustScore,
@@ -277,14 +329,13 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanReport> {
   // 17. Server Fingerprinting (Mutation Check)
   const mutations = checkFingerprints(report.results);
   for (const result of report.results) {
-    const serverKey = `${result.toolName}:${result.serverName}`;
+    const serverKey = fingerprintKey(result);
     if (mutations[serverKey]) {
       result.findings.push(...mutations[serverKey]);
     }
   }
 
   // 18. Apply YAML Policy
-  const yamlPolicy = loadYamlPolicy(options.policy);
   if (yamlPolicy) {
     applyPolicy(report.results, yamlPolicy);
     if (!options.silent) {

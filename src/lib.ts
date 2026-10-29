@@ -1,4 +1,5 @@
 import { runScan } from './commands/scan.js';
+import { BaselineKeyError } from './utils/audit-logger.js';
 import { detectTools } from './config/detector.js';
 import { generateHtmlReport } from './utils/html-reporter.js';
 import { generateSarif } from './utils/sarif-reporter.js';
@@ -17,9 +18,12 @@ import { scanEnvLeak } from './scanners/env-leak-scanner.js';
 import { scanNetworkEgress } from './scanners/network-egress-scanner.js';
 import { scanDataFlow } from './scanners/data-flow-scanner.js';
 import { scanDependencyCves } from './scanners/osv-scanner.js';
+import { PolicyError } from './utils/policy-file.js';
 
 export {
   runScan,
+  // runScan rejects with this when baseline.key is not a regular file.
+  BaselineKeyError,
   detectTools,
   generateHtmlReport,
   generateSarif,
@@ -49,6 +53,8 @@ export {
   // single-package check scanPackageDeep already does against the
   // top-level package name.
   scanDependencyCves,
+  // runScan throws this for a policy it can't trust; catch it by type.
+  PolicyError,
 };
 
 export type {

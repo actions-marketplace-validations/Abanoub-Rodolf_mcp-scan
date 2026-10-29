@@ -1,7 +1,8 @@
 import globals from "globals";
 import tseslint from "typescript-eslint";
+import { withNoSleep } from "./eslint/no-sleep.js";
 
-export default [
+export default withNoSleep([
   {
     languageOptions: { 
       globals: {
@@ -20,5 +21,5 @@ export default [
         "caughtErrorsIgnorePattern": "^_",
       }],
     }
-  }
-];
+  },
+]);
